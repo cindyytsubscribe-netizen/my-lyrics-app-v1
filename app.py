@@ -7,7 +7,8 @@ st.set_page_config(page_title="歌詞學習助手", layout="centered")
 # 讀取後台設定的 API Key
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # 修改後的
+    model = genai.GenerativeModel('models/gemini-1.5-flash')
 else:
     st.error("請在 Secrets 設定中輸入您的 API Key！")
 

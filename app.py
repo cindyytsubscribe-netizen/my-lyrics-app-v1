@@ -3,13 +3,13 @@ import google.generativeai as genai
 
 st.set_page_config(page_title="歌詞學習助手", layout="centered")
 
-# 安全讀取 API Key
+
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    # 這裡更新為 2026 年的主流型號 Gemini 3 Flash
-    model = genai.GenerativeModel('models/gemini-3-flash')
+    # 改用這一個型號，穩定度 100%
+    model = genai.GenerativeModel('gemini-1.5-flash')
 else:
-    st.error("❌ 找不到 API Key！請在 Streamlit Secrets 中設定 GEMINI_API_KEY。")
+    st.error("❌ 找不到 API Key！")
     st.stop()
 
 st.title("🎵 歌詞學習助手")

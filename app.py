@@ -2,95 +2,85 @@ import streamlit as st
 import google.generativeai as genai
 import json
 
-# --- 1. 基礎設定 ---
 st.set_page_config(page_title="法日歌詞導師", layout="wide")
 
-# --- 2. 解決連線失敗 (NotFound 修復) ---
-@st.cache_resource
-def get_ai_model():
-    if "GEMINI_API_KEY" not in st.secrets:
-        return None, "請在 Secrets 設定 GEMINI_API_KEY"
+# --- 核心：強效偵錯連線 ---
+def try_init_ai():
+    if "GEMINI_API_KEY" not in st.secrets or st.secrets["GEMINI_API_KEY"] == "":
+        return None, "尚未在 Secrets 填入 GEMINI_API_KEY"
+    
     try:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        # 嘗試所有可能的名稱
-        for m_name in ['gemini-1.5-flash', 'models/gemini-1.5-flash', 'gemini-pro']:
-            try:
-                m = genai.GenerativeModel(m_name)
-                m.generate_content("test") # 預先測試連線
-                return m, None
-            except:
-                continue
-        return None, "找不到可用模型，請檢查 API Key 權限。"
+        # 1. 嘗試列出所有妳能用的型號
+        available_models = [m.name for m in genai.list_models()]
+        if not available_models:
+            return None, "妳的 API Key 權限下找不到任何可用型號，請檢查 Google AI Studio 專案設定。"
+        
+        # 2. 挑選最強的型號
+        target = next((m for m in available_models if "gemini-1.5-flash" in m or "gemini-3-flash" in m), available_models[0])
+        return genai.GenerativeModel(target), None
     except Exception as e:
-        return None, str(e)
+        # 這裡會噴出 Google 的原始錯誤
+        return None, f"Google 伺服器回傳錯誤：{str(e)}"
 
-model, ai_error = get_ai_model()
+model, debug_error = try_init_ai()
 
-# --- 3. 歌曲檔案庫邏輯 ---
+# --- 檔案庫邏輯 (保持建檔功能) ---
 if 'song_db' not in st.session_state:
-    st.session_state.song_db = {} # 格式: {歌名: {"lyrics": ..., "results": ...}}
+    st.session_state.song_db = {}
 
-# --- 4. 側邊欄：管理妳的建檔 ---
+# --- 側邊欄：建檔管理 ---
 with st.sidebar:
-    st.header("📂 歌詞檔案庫")
-    
-    # 功能 A：從檔案庫載入 (如果已經有存檔)
+    st.header("📂 歌曲檔案庫")
     if st.session_state.song_db:
-        choice = st.selectbox("我的收藏", ["-- 請選擇 --"] + list(st.session_state.song_db.keys()))
+        choice = st.selectbox("選取收藏", ["-- 請選擇 --"] + list(st.session_state.song_db.keys()))
         if choice != "-- 請選擇 --":
-            st.session_state.loaded_song = st.session_state.song_db[choice]
-            st.success(f"已載入：{choice}")
+            st.session_state.curr_song = st.session_state.song_db[choice]
     
     st.divider()
-    
-    # 功能 B：永久保存到手機 (下載/上傳)
-    st.subheader("💾 永久保存備份")
+    st.subheader("💾 備份檔案")
     db_json = json.dumps(st.session_state.song_db, ensure_ascii=False)
-    st.download_button("📩 下載整份歌單備份", db_json, file_name="my_lyrics_backup.json")
+    st.download_button("📩 下載備份 (my_lyrics.json)", db_json, file_name="my_lyrics.json")
     
-    uploaded_file = st.file_uploader("📤 匯入備份檔案", type="json")
-    if uploaded_file:
-        st.session_state.song_db = json.load(uploaded_file)
-        st.rerun()
+    uploaded = st.file_uploader("📤 匯入備份", type="json")
+    if uploaded:
+        st.session_state.song_db = json.load(uploaded)
+        st.success("匯入成功！")
 
-# --- 5. 主介面 ---
-st.title("🎵 歌詞導師 (建檔版)")
+# --- 主介面 ---
+st.title("🎵 歌詞導師 (Debug 版)")
+
+if debug_error:
+    st.error(f"🆘 連線診斷報告：{debug_error}")
+    st.info("💡 小技巧：請嘗試重新申請一個 API Key 並確認 `requirements.txt` 已更新。")
+else:
+    st.success(f"✅ AI 連線成功！目前使用型號：{model.model_name}")
 
 # 輸入區
-with st.expander("📝 匯入新歌曲", expanded=True):
-    t_col, l_col = st.columns([2, 1])
-    with t_col:
-        song_title = st.text_input("歌名：", placeholder="例如：A quelle étoile")
-    with l_col:
-        lang = st.radio("語言：", ["法文", "日文"], horizontal=True)
+with st.expander("📝 錄入新歌", expanded=True):
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        song_title = st.text_input("歌名", value=st.session_state.get('curr_song', {}).get('title', ''))
+    with col2:
+        lang = st.radio("語言", ["法文", "日文"], horizontal=True)
     
-    lyrics_content = st.text_area("歌詞內容：", height=150)
+    lyrics = st.text_area("歌詞", value=st.session_state.get('curr_song', {}).get('lyrics', ''), height=150)
     
-    if st.button("✨ 開始解析並自動存檔", use_container_width=True):
-        if song_title and lyrics_content:
-            if ai_error:
-                st.error(f"AI 連線失敗：{ai_error}")
-            else:
-                with st.spinner('AI 老師正在努力中...'):
-                    # 一次性解析 (省額度)
-                    full_prompt = f"妳是專業老師，請翻譯這段{lang}歌詞為繁中，並解析其中 5 個重點單字：\n{lyrics_content}"
-                    res = model.generate_content(full_prompt)
-                    # 存入資料庫
-                    st.session_state.song_db[song_title] = {
-                        "lyrics": lyrics_content,
-                        "lang": lang,
-                        "analysis": res.text
-                    }
-                    st.toast("✅ 解析完成並已存入檔案庫")
-        else:
-            st.warning("請輸入歌名與內容")
+    if st.button("🚀 解析並存入檔案庫", use_container_width=True):
+        if not model:
+            st.error("AI 尚未連線，無法解析。但妳仍可手動輸入內容存檔。")
+        elif song_title and lyrics:
+            with st.spinner("AI 老師分析中..."):
+                try:
+                    res = model.generate_content(f"妳是專業語言老師，請翻譯這段{lang}歌詞為繁體中文，並詳細解釋單字與文法：\n{lyrics}")
+                    st.session_state.song_db[song_title] = {"title": song_title, "lyrics": lyrics, "analysis": res.text, "lang": lang}
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"解析失敗：{e}")
 
-# --- 6. 顯示結果 (這部分不消耗 API，直接從存檔讀取) ---
-if 'loaded_song' in st.session_state or song_title in st.session_state.song_db:
-    current_song = st.session_state.get('loaded_song') or st.session_state.song_db[song_title]
+# 顯示結果
+if 'curr_song' in st.session_state or (not debug_error and song_title in st.session_state.song_db):
+    song_data = st.session_state.get('curr_song') or st.session_state.song_db[song_title]
     st.divider()
-    st.subheader(f"📖 學習筆記：{song_title if 'song_title' in locals() else choice}")
-    st.markdown(current_song["analysis"])
-    
-    with st.expander("查看原文歌詞"):
-        st.write(current_song["lyrics"])
+    st.subheader(f"📖 學習筆記：{song_data['title']}")
+    st.markdown(song_data["analysis"])

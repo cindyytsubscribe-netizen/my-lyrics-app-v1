@@ -1,113 +1,96 @@
 import streamlit as st
 import google.generativeai as genai
+import json
 
 # --- 1. 基礎設定 ---
 st.set_page_config(page_title="法日歌詞導師", layout="wide")
 
-# --- 2. 終極 AI 連線邏輯 (解決 NotFound 問題) ---
+# --- 2. 解決連線失敗 (NotFound 修復) ---
 @st.cache_resource
-def init_ai():
+def get_ai_model():
     if "GEMINI_API_KEY" not in st.secrets:
-        return None, "找不到 API Key"
+        return None, "請在 Secrets 設定 GEMINI_API_KEY"
     try:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        # 自動尋找可用型號
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        # 優先順序
-        for target in ["gemini-1.5-flash", "gemini-3-flash", "gemini-pro"]:
-            for m_name in available_models:
-                if target in m_name:
-                    return genai.GenerativeModel(m_name), None
-        return genai.GenerativeModel(available_models[0]), None
+        # 嘗試所有可能的名稱
+        for m_name in ['gemini-1.5-flash', 'models/gemini-1.5-flash', 'gemini-pro']:
+            try:
+                m = genai.GenerativeModel(m_name)
+                m.generate_content("test") # 預先測試連線
+                return m, None
+            except:
+                continue
+        return None, "找不到可用模型，請檢查 API Key 權限。"
     except Exception as e:
         return None, str(e)
 
-model, error_msg = init_ai()
+model, ai_error = get_ai_model()
 
-# --- 3. 檔案庫存檔邏輯 (Session State) ---
-if 'my_archive' not in st.session_state:
-    st.session_state.my_archive = {}
+# --- 3. 歌曲檔案庫邏輯 ---
+if 'song_db' not in st.session_state:
+    st.session_state.song_db = {} # 格式: {歌名: {"lyrics": ..., "results": ...}}
 
-# --- 4. 側邊欄：管理妳的歌單 ---
+# --- 4. 側邊欄：管理妳的建檔 ---
 with st.sidebar:
-    st.header("📂 我的歌詞檔案庫")
+    st.header("📂 歌詞檔案庫")
     
-    if st.session_state.my_archive:
-        selected_song = st.selectbox("選取已存歌曲：", ["-- 請選擇 --"] + list(st.session_state.my_archive.keys()))
-        if selected_song != "-- 請選擇 --":
-            # 載入存檔內容
-            st.session_state.current_lyrics = st.session_state.my_archive[selected_song]["content"]
-            st.session_state.current_lang = st.session_state.my_archive[selected_song]["lang"]
-            st.success(f"已載入：{selected_song}")
-    else:
-        st.write("目前尚無存檔。")
+    # 功能 A：從檔案庫載入 (如果已經有存檔)
+    if st.session_state.song_db:
+        choice = st.selectbox("我的收藏", ["-- 請選擇 --"] + list(st.session_state.song_db.keys()))
+        if choice != "-- 請選擇 --":
+            st.session_state.loaded_song = st.session_state.song_db[choice]
+            st.success(f"已載入：{choice}")
     
     st.divider()
-    st.caption("註：目前的存檔在瀏覽器重新整理後會消失。若要永久保存，建議將歌詞存入妳的 Google Keep 清單中。")
+    
+    # 功能 B：永久保存到手機 (下載/上傳)
+    st.subheader("💾 永久保存備份")
+    db_json = json.dumps(st.session_state.song_db, ensure_ascii=False)
+    st.download_button("📩 下載整份歌單備份", db_json, file_name="my_lyrics_backup.json")
+    
+    uploaded_file = st.file_uploader("📤 匯入備份檔案", type="json")
+    if uploaded_file:
+        st.session_state.song_db = json.load(uploaded_file)
+        st.rerun()
 
-# --- 5. 主介面設計 ---
-st.title("🎵 歌詞學習助手")
-
-if error_msg:
-    st.error(f"AI 連線失敗：{error_msg}")
-    st.stop()
+# --- 5. 主介面 ---
+st.title("🎵 歌詞導師 (建檔版)")
 
 # 輸入區
-col_l, col_r = st.columns([1, 1])
-with col_l:
-    lang = st.radio("語言：", ["法文", "日文"], 
-                    index=0 if st.session_state.get("current_lang") == "法文" else 1, 
-                    horizontal=True)
-with col_r:
-    song_name = st.text_input("歌曲名稱：", placeholder="例如：A quelle étoile")
-
-lyric_input = st.text_area("歌詞內容：", 
-                          value=st.session_state.get("current_lyrics", ""), 
-                          height=150)
-
-# 功能按鈕
-c1, c2 = st.columns(2)
-with c1:
-    if st.button("💾 存入檔案庫", use_container_width=True):
-        if song_name and lyric_input:
-            st.session_state.my_archive[song_name] = {"content": lyric_input, "lang": lang}
-            st.toast(f"✅ {song_name} 已成功存檔！")
-        else:
-            st.warning("請輸入歌名與歌詞再存檔。")
-
-with c2:
-    start_analyze = st.button("✨ 開始解析歌詞", use_container_width=True)
-
-# --- 6. 解析與顯示 ---
-if start_analyze and lyric_input:
-    lines = [l.strip() for l in lyric_input.split('\n') if l.strip()]
+with st.expander("📝 匯入新歌曲", expanded=True):
+    t_col, l_col = st.columns([2, 1])
+    with t_col:
+        song_title = st.text_input("歌名：", placeholder="例如：A quelle étoile")
+    with l_col:
+        lang = st.radio("語言：", ["法文", "日文"], horizontal=True)
     
-    # 這裡加入一個簡單的防崩潰處理
-    try:
-        for idx, line in enumerate(lines):
-            st.markdown(f"#### 🎤 {line}")
-            
-            # 翻譯 (加上 try-except 避免單行錯誤毀掉全部)
-            try:
-                with st.spinner('翻譯中...'):
-                    res = model.generate_content(f"請將這句{lang}歌詞翻譯成繁體中文：『{line}』")
-                    st.success(f"💡 {res.text}")
-            except:
-                st.error("翻譯暫時失效，請稍後再試。")
+    lyrics_content = st.text_area("歌詞內容：", height=150)
+    
+    if st.button("✨ 開始解析並自動存檔", use_container_width=True):
+        if song_title and lyrics_content:
+            if ai_error:
+                st.error(f"AI 連線失敗：{ai_error}")
+            else:
+                with st.spinner('AI 老師正在努力中...'):
+                    # 一次性解析 (省額度)
+                    full_prompt = f"妳是專業老師，請翻譯這段{lang}歌詞為繁中，並解析其中 5 個重點單字：\n{lyrics_content}"
+                    res = model.generate_content(full_prompt)
+                    # 存入資料庫
+                    st.session_state.song_db[song_title] = {
+                        "lyrics": lyrics_content,
+                        "lang": lang,
+                        "analysis": res.text
+                    }
+                    st.toast("✅ 解析完成並已存入檔案庫")
+        else:
+            st.warning("請輸入歌名與內容")
 
-            # 單字彈窗
-            words = line.split() if lang == "法文" else list(line)
-            cols = st.columns(min(len(words), 5))
-            for i, word in enumerate(words[:20]):
-                with cols[i % 5]:
-                    with st.popover(word, use_container_width=True):
-                        st.write(f"🔍 **{word}**")
-                        with st.spinner('查詢中...'):
-                            try:
-                                exp = model.generate_content(f"在歌詞『{line}』中，單字『{word}』的意思、原型與文法為何？請用繁體中文簡短回答。")
-                                st.info(exp.text)
-                            except:
-                                st.write("查詢太頻繁，請等 30 秒。")
-            st.divider()
-    except Exception as e:
-        st.error(f"解析發生錯誤：{e}")
+# --- 6. 顯示結果 (這部分不消耗 API，直接從存檔讀取) ---
+if 'loaded_song' in st.session_state or song_title in st.session_state.song_db:
+    current_song = st.session_state.get('loaded_song') or st.session_state.song_db[song_title]
+    st.divider()
+    st.subheader(f"📖 學習筆記：{song_title if 'song_title' in locals() else choice}")
+    st.markdown(current_song["analysis"])
+    
+    with st.expander("查看原文歌詞"):
+        st.write(current_song["lyrics"])
